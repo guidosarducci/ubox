@@ -31,6 +31,7 @@
 #include <glob.h>
 #include <elf.h>
 #include <ctype.h>
+#include <dirent.h>
 
 #include <libubox/avl.h>
 #include <libubox/avl-cmp.h>
@@ -64,6 +65,7 @@ struct module {
 	char *name;
 	char *depends;
 	char *opts;
+	char *file;
 
 	int size;
 	int usage;
@@ -158,20 +160,14 @@ static void free_modules(void)
 
 static char* get_module_path(char *name)
 {
-	char **p;
-	static char path[256];
+	struct module *m;
 	struct stat s;
 
 	if (!stat(name, &s) && S_ISREG(s.st_mode))
 		return name;
 
-	for (p = module_folders; *p; p++) {
-		snprintf(path, sizeof(path), "%s%s.ko", *p, name);
-		if (!stat(path, &s) && S_ISREG(s.st_mode))
-			return path;
-	}
-
-	return NULL;
+	m = find_module(name);
+	return m ? m->file : NULL;
 }
 
 static char* get_module_name(char *path)
@@ -278,20 +274,24 @@ alloc_module_node(const char *name, struct module *m, bool is_alias)
 }
 
 static struct module *
-alloc_module(const char *name, const char * const *aliases, int naliases, const char *depends, int size)
+alloc_module(const char *name, const char * const *aliases, int naliases, const char *depends, const char *file, int size)
 {
 	struct module *m;
-	char *_name, *_dep;
+	char *_name, *_dep, *_file;
 	int i;
 
 	m = calloc_a(sizeof(*m),
 		&_name, strlen(name) + 1,
-		&_dep, depends ? strlen(depends) + 2 : 0);
+		&_dep, depends ? strlen(depends) + 2 : 0,
+		&_file, file ? strlen(file) + 1 : 0);
 	if (!m)
 		return NULL;
 
 	m->name = strcpy(_name, name);
 	m->opts = 0;
+
+	if (file)
+		m->file = strcpy(_file, file);
 
 	if (depends) {
 		m->depends = strcpy(_dep, depends);
@@ -346,7 +346,7 @@ static int scan_loaded_modules(void)
 		n = find_module(m.name);
 		if (!n) {
 			/* possibly a module outside /lib/modules/<ver>/ */
-			n = alloc_module(m.name, NULL, 0, m.depends, m.size);
+			n = alloc_module(m.name, NULL, 0, m.depends, NULL, m.size);
 		}
 		if (!n) {
 			ULOG_ERR("Failed to allocate memory for module\n");
@@ -476,7 +476,7 @@ next_string:
 		strings = &sep[strlen(sep)];
 	}
 
-	m = alloc_module(name, aliases, naliases, dep, is_builtin ? 0 : s.st_size);
+	m = alloc_module(name, aliases, naliases, dep, module, is_builtin ? 0 : s.st_size);
 
 	if (m)
 		m->state = is_builtin ? BUILTIN : SCANNED;
@@ -544,12 +544,18 @@ err:
 	return rv;
 }
 
+static int f_subfolder_dirs(const struct dirent *d)
+{
+	return (d->d_type == DT_DIR && strncmp(d->d_name, ".", 1));
+}
+
 static int scan_module_folder(const char *dir)
 {
 	int gl_flags = GLOB_NOESCAPE | GLOB_MARK;
+	struct dirent **subdirs;
 	char *path;
 	glob_t gl;
-	int j, rv = 0;
+	int j, n, rv = 0;
 
 	path = alloca(strlen(dir) + sizeof("*.ko") + 1);
 	sprintf(path, "%s*.ko", dir);
@@ -586,6 +592,19 @@ static int scan_module_folder(const char *dir)
 	}
 
 	globfree(&gl);
+
+	n = scandir(dir, &subdirs, f_subfolder_dirs, alphasort);
+	if (n == -1)
+		ULOG_WARN("failed to scan subfolders of %s\n", dir);
+
+	while (n--) {
+		char path[330];
+
+		snprintf(path, sizeof(path), "%s%s/", dir, subdirs[n]->d_name);
+		rv |= scan_module_folder(path);
+		free(subdirs[n]);
+	}
+	free(subdirs);
 
 	return rv;
 }
