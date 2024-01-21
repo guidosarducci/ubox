@@ -328,7 +328,7 @@ static int scan_loaded_modules(void)
 	fp = fopen("/proc/modules", "r");
 	if (!fp) {
 		ULOG_ERR("failed to open /proc/modules\n");
-		goto out;
+		return rv;
 	}
 
 	while (getline(&buf, &buf_len, fp) > 0) {
@@ -499,7 +499,7 @@ static int scan_builtin_modules(void)
 	int rv = -1;
 
 	if (!module_folders && init_module_folders())
-		goto err;
+		return rv;
 	for (p = module_folders; *p; p++) {
 		snprintf(path, sizeof(path), "%s%s", *p, MOD_BUILTIN);
 		if (!stat(path, &st) && S_ISREG(st.st_mode)) {
@@ -509,7 +509,7 @@ static int scan_builtin_modules(void)
 		}
 	}
 	if (!fp)
-		goto out;	/* OK if modules.builtin unavailable */
+		return 0;	/* OK if modules.builtin unavailable */
 
 	while (getline(&buf, &buf_len, fp) > 0) {
 		struct module *m;
@@ -529,7 +529,6 @@ static int scan_builtin_modules(void)
 			goto err;
 		}
 	}
-out:
 	rv = 0;
 err:
 	free(buf);
@@ -649,8 +648,10 @@ static int print_modinfo(const struct module *m)
 				printf("%s:\t%s\n",  dup, sep);
 		} else {
 			sep2 = strstr(sep, ":");
-			if (!sep2)
+			if (!sep2) {
+				free(dup);
 				break;
+			}
 			pname = strndup(sep, sep2 - sep);
 			sep2++;
 			pdata = strdup(sep2);
@@ -675,8 +676,7 @@ static int print_modinfo(const struct module *m)
 		}
 next_string:
 		strings = &sep[strlen(sep)];
-		if (dup)
-			free(dup);
+		free(dup);
 	}
 
 	list_for_each_entry(p, &params, list) {
